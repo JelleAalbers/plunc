@@ -71,16 +71,13 @@ class TestStatistic(object):
         """
         if not self.training_done:
             raise ValueError("Training is not yet finished!")
-        try:
-            value[0]
-        except (IndexError, TypeError):
-            # Called with scalar for value
+        is_scalar, value = scalar_or_array(value)
+        if is_scalar:
             try:
                 return self._trained_likelihood[self._trained_likelihood.get_bin_indices((value, mu))]
             except IndexError:
                 raise ValueError("value=%s, mu=%s is outside of the training range!" % (value, mu))
         else:
-            # Called with arraylike for value
             return np.array([self.likelihood(x, mu) for x in value])
 
     def likelihood_leq(self, value, mu):
@@ -90,17 +87,14 @@ class TestStatistic(object):
         """
         if not self.training_done:
             raise ValueError("Training is not yet finished!")
-        try:
-            value[0]
-        except (IndexError, TypeError):
-            # Called with scalar for value
+        is_scalar, value = scalar_or_array(value)
+        if is_scalar:
             try:
                 indices = self._trained_likelihood.get_bin_indices((value, mu))
                 return np.sum(self._trained_likelihood[(slice(0, indices[0] + 1), indices[1])])
             except IndexError:
                 raise ValueError("value=%s, mu=%s is outside of the training range!" % (value, mu))
         else:
-            # Called with arraylike for value
             return np.array([self.likelihood_leq(x, mu) for x in value])
 
     def likelihood_of_observation(self, observation, mu):
@@ -111,11 +105,35 @@ class TestStatistic(object):
         raise NotImplementedError
 
     def observation_generator(self, mu, n_trials=1):
+        """Generate n_trials observations for the statistic under hypothesis mu"""
         n_per_trial = np.random.poisson(mu, n_trials)
         # Last array will always be empty, because we passed the very last index + 1 as split point
         return np.split(self.event_generator(np.sum(n_per_trial)),
                         np.cumsum(n_per_trial))[:-1]
 
     def event_generator(self, n):
+        """Generate a single observation of n events"""
         return np.zeros(n)
-        #return np.random.uniform(0, 1, np.sum(n_per_trial)
+
+
+def scalar_or_array(x):
+    """Returns is_scalar, y
+    here y is x converted to scalar or numpy array, is_scalar indicates which.
+
+    This deals with two numpy crazynesses:
+     - x[0] throws a different error for python and numpy scalars
+     - np.asarray(scalar) would create a 0-d array which you can't index
+    """
+    try:
+        x[0]
+    except TypeError:
+        # Ordinary python scalar
+        return True, x
+    except IndexError:
+        if isinstance(x, np.ndarray):
+            # Numpy 0d array
+            return True, x.reshape(-1)[0]
+        else:
+            # Numpy scalar
+            return True, x
+    return False, np.asarray(x)

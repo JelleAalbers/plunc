@@ -28,7 +28,7 @@ class IntervalChoice(object):
         # Remember hypothesis here includes background!
         train_values = self.statistic.stats
         likelihoods = self.statistic.likelihood(train_values, hypothesis)
-        likelihoods /= np.sum(likelihoods)
+        likelihoods = likelihoods / np.sum(likelihoods)
 
         # Sort train_values and likelihoods by decreasing priority of inclusion
         values_for_ranking = self.rank_stat_values(statistic_values=train_values,

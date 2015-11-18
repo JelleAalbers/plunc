@@ -7,7 +7,7 @@ class IntervalChoice(object):
     """
     method = 'rank'    # 'rank' or 'threshold'
     threshold = float('inf')
-    desired_precision = 0.01
+    precision_digits = 2
     use_interval_cache = True
     max_hypothesis = 1e6
 
@@ -27,8 +27,6 @@ class IntervalChoice(object):
         if self.use_interval_cache and (hypothesis, precision_digits) in self.cached_intervals:
             return self.cached_intervals[(hypothesis, precision_digits)]
 
-        # Remember hypothesis here includes background!
-        # TODO: u
         stat_values, likelihoods = self.statistic.get_values_and_likelihoods(hypothesis,
                                                                              precision_digits=precision_digits)
         likelihoods = likelihoods / np.sum(likelihoods)
@@ -82,16 +80,17 @@ class IntervalChoice(object):
         return low_lim <= value <= high_lim
 
     def get_confidence_interval(self, value, precision_digits, search_region, debug=False):
-        """Perform Neynman construction to get confidence interval on event rate,
+        """Performs the Neynman construction to get confidence interval on event rate (mu),
         if the statistic is observed to have value
         """
-        is_value_in = lambda mu: self.is_value_included(value, mu, precision_digits)
+        is_value_in = lambda mu: self.is_value_included(value, mu + self.background, precision_digits)
 
         # We first need one value in the interval to bound the limit searches
         try:
-            true_point, low_search_bound, high_search_bound = search_true_instance(is_value_in, *search_region,
+            true_point, low_search_bound, high_search_bound = search_true_instance(is_value_in,
+                                                                                   *search_region,
                                                                                    precision_digits=precision_digits,
-                                                                                   debug=debug)
+                                                                                   debug=debug,)
         except SearchFailedException as e:
             if debug:
                 print("Exploratory search could not find a single value in the interval! "
@@ -131,13 +130,13 @@ class IntervalChoice(object):
         # Return "rank" of each hypothesis. Hypotheses with highest ranks will be included first.
         raise NotImplementedError()
 
-    def __call__(self, observation, precision_digits=2, search_region=None, debug=False):
+    def __call__(self, observation, precision_digits=None, search_region=None, debug=False):
         """Perform Neynman construction to get confidence interval on event rate for observation.
         """
-        if search_region is None:
-            search_region = [0, round_to_digits(10 + 3 * len(observation), precision_digits)]
         if precision_digits is None:
             precision_digits = self.precision_digits
+        if search_region is None:
+            search_region = [0, round_to_digits(10 + 3 * len(observation), precision_digits)]
         if self.statistic.mu_dependent:
             value = self.statistic(observation, self.statistic.mus)
         else:

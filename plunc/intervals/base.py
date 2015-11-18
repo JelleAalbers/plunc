@@ -1,4 +1,6 @@
 import numpy as np
+from tqdm import tqdm
+from scipy.interpolate import interp1d
 from plunc.common import round_to_digits
 from plunc.exceptions import SearchFailedException
 
@@ -18,6 +20,56 @@ class IntervalChoice(object):
 
         # Dictionary holding "horizontal" intervals: interval on statistic for each precision and hypothesis.
         self.cached_intervals = {}
+
+    def produce_interpolator(self, train_mus=None, debug=False):
+        if train_mus is None:
+            train_mus = np.concatenate(([0], np.logspace(0, 3, 100)))
+
+        # Get a sensible range of values for the statistic in the training range by running a few simulations
+        # Complete coverage is not important, we just need a couple reasonable values
+        # Then compute limits for those statistic values
+        ns = np.repeat(train_mus, 3)
+        s_values = np.zeros(len(ns))
+        for i, n in enumerate(ns):
+            s_values[i] = self.statistic(self.statistic.event_generator(n))
+        s_values.sort()
+        s_values, s_unique_indices = np.unique(s_values, return_index=True)
+        ns = ns[s_unique_indices]
+        low_lims = np.zeros(len(s_values))
+        high_lims = np.zeros(len(s_values))
+        for i_backwards in tqdm(range(len(s_values)), desc='Building limits...'):
+            i = len(s_values) - i_backwards - 1
+            low_lims[i], high_lims[i] = self.get_confidence_interval(s_values[i],
+                                                                     precision_digits=self.precision_digits,
+                                                                     search_region=[0, 5 + 2 * ns[i]],
+                                                                     debug=debug)
+
+        # Construct the limit interpolators
+        if not np.all(np.isfinite(low_lims)):
+            raise ValueError("Nonfinite low lims found!")
+        ll_itp = interp1d(s_values, low_lims)
+        if not np.all(np.isfinite(high_lims)):
+            if np.any(np.isfinite(high_lims)):
+                # Mixed finite / infinite high limits. Probably some low-statistics intervals are actually empty
+                first_finite = np.min(np.where(np.isfinite(high_lims))[0])
+                _hl_itp = interp1d(s_values[first_finite:], high_lims[first_finite:])
+                print("First finite: %s (%d of %d)" % (s_values[first_finite], first_finite, len(high_lims)))
+                def hl_itp(x):
+                    if x < s_values[first_finite]:
+                        return float('inf')
+                    return _hl_itp(x)
+            else:
+                # It's a lower-limit only statistic
+                hl_itp = lambda x: float('inf')
+        else:
+            hl_itp = interp1d(s_values, high_lims)
+
+        # TODO: extrapolation to high s
+        def get_new_limit(observation):
+            value = self.statistic(observation)
+            return float(ll_itp(value)), float(hl_itp(value))
+
+        return get_new_limit
 
     def get_interval_on_statistic(self, hypothesis, precision_digits):
         """Returns the self.cl confidence level interval on self.statistic for the event rate hypothesis

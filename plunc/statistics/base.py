@@ -1,17 +1,11 @@
 import numpy as np
 from scipy.ndimage.filters import gaussian_filter1d
 
-def round_to_digits(x, n_digits):
-    """Rounds x to leading digits"""
-    return round(x, n_digits - 1 - int(np.log10(x)) + (1 if x < 1 else 0))
-
-
-
 
 class TestStatistic(object):
     """Base test statistic class
     """
-    use_pmf_cache = False   # May fry your RAM, use wisely
+    use_pmf_cache = True
     statistic_name = 's'
     n_trials = int(1e4)
     mu_dependent = False    # Set to True if the statistic is hypothesis-dependent
@@ -22,15 +16,8 @@ class TestStatistic(object):
             setattr(self, k, v)
         self.pmf_cache = {}
 
-    def add_training_observations(self, training_observations, mu):
-        """Train the likelihood function by passing Monte Carlo trials."""
-        if self.training_done:
-            raise ValueError("Training is already finished!")
-        self._trained_likelihood.add([self(x, hypothesis=mu) for x in training_observations],
-                                     [mu] * len(training_observations))
-
-    def get_values_and_likelihoods(self, mu, desired_precision=None):
-        # TODO: do something with desired_precision...
+    def get_values_and_likelihoods(self, mu, precision_digits=3):
+        # TODO: do something with precision_digits...
         if self.use_pmf_cache and mu in self.pmf_cache:
             return self.pmf_cache[mu]
 
@@ -55,17 +42,38 @@ class TestStatistic(object):
         return values, likelihoods
 
     def build_pdf(self, values, mu):
-        """Return possible values, likelihoods. Can bin.
+        """Return possible values, likelihoods. Can bin, can even use mu if desired (not usually needed).
         By default uses a KDE (implemented as fine histogram + Gaussian filter)
         KDE bandwith = Silverman rule
         """
-        # First take a very fine histogram, then Gauss filter
+        # First take a very fine histogram...
         # TODO: somehow make bins dependent on n_trials, and n_trials on desired precision...
-        hist, bin_edges = np.histogram(values, bins=1000, density=True)
+        hist, bin_edges = np.histogram(values, bins=1000)
+        hist = hist.astype(np.float)
+        hist /= hist.sum()
+
+        # ... then apply a Gaussian filter.
+        # The filter is not applied on the outermost bins, since these might be accumulation points
+        # we don't want to smear (e.g. a statistic generally may take an extreme value if there are no events)
+        # The Bandwidth is determined by the Silverman rule of thumb, looking at the non-extreme values.
+        # TODO: this behaviour should be configurable per-statistic, don't assume accumulation points by default
         bin_spacing = bin_edges[1] - bin_edges[0]
-        bw = 1.06 * np.std(values) / len(values)**(1/5)
-        hist = gaussian_filter1d(hist, sigma=bw / bin_spacing)
-        return 0.5 * (bin_edges[1:] + bin_edges[:-1]), hist
+        non_extreme_values = values[(values != np.min(values)) & (values != np.max(values))]
+        bandwidth = 1.06 * non_extreme_values.std() / len(non_extreme_values)**(1/5)
+        center_hist = gaussian_filter1d(hist[1:-1], sigma=bandwidth / bin_spacing)
+        # Ensure the Gauss filter has not changed the sum of the bins it was applied to:
+        center_hist /= np.sum(hist[1:-1])/center_hist.sum()
+        hist[1:-1] = center_hist
+        if not np.isclose(np.sum(hist), 1):
+            raise RuntimeError("WTF? Density histogram sums to %s, not 1 after filtering!" % np.sum(hist))
+
+        # The values representing to the histogram bins are the bin centers...
+        # ... except at the edges, where we use the outer boundaries.
+        # This is again necessary to deal with accumulation points.
+        values = (bin_edges[1:] + bin_edges[:-1]) * 0.5
+        values[0] = bin_edges[0]
+        values[-1] = bin_edges[-1]
+        return values, hist
 
     def probability(self, value, mu):
         """Returns probability of observing statistic = value under hypothesis mu

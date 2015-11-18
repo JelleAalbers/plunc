@@ -2,6 +2,7 @@ import numpy as np
 from scipy import stats
 
 from .base import TestStatistic
+from plunc.common import round_to_digits
 
 
 class NumberOfEvents(TestStatistic):
@@ -13,14 +14,17 @@ class NumberOfEvents(TestStatistic):
     def __call__(self, observation, hypothesis=None):
         return len(observation)
 
-    def get_values_and_likelihoods(self, mu, desired_precision=None):
+    def get_values_and_likelihoods(self, mu, precision_digits=None):
         if mu == 0:
             # Return two possible values: 0 and 1, with probability 1 and 0
             # There must be more than one possible value to avoid problems
             # e.g. upper limit should return infinite interval, lower limit single point at 0
             # for this we need to check if 1 is included or not
             return np.array([0, 1]), np.array([1, 0])
-        values = np.arange(0, 4 + mu + 4 * np.sqrt(mu))
+        # Step size
+        step_size = max(1, 10 **(int(np.log10(mu)) - precision_digits))
+        max_mu = round_to_digits(4 + mu + 4 * np.sqrt(mu), precision_digits)
+        values = np.arange(0, max_mu, step_size)
         return values, stats.poisson.pmf(values, mu=mu)
 
     def probability(self, values, mu):

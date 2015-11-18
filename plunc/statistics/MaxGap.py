@@ -8,11 +8,8 @@ class MaxGap(TestStatistic):
     This uses Monte Carlo training rather than Yellin's exact equation (2 in his paper)
     as the exact equation will cause overflow errors at very high n
     """
-    stats = np.linspace(0, 100, 1000 + 1)
-    mus = np.linspace(0, 100, 1000 + 1)
     statistic_name = 'ginv'
     distribution = scipy_stats.uniform
-    n_training_trials = 1000
 
     def __call__(self, observation, hypothesis=None):
         n = len(observation)
@@ -28,6 +25,12 @@ class MaxGap(TestStatistic):
                           np.diff(transformed_obs).max(),
                           1 - transformed_obs[-1])
         return 1/gap
+
+    def get_values_and_likelihoods(self, mu, precision_digits=3):
+        if mu == 0:
+            # See NumberOfEvents on why you must always return more than one 'possible' value
+            return np.array([1, 2]), np.array([1, 0])
+        return TestStatistic.get_values_and_likelihoods(self, mu, precision_digits)
 
     def event_generator(self, n_trials):
         return np.random.uniform(0, 1, n_trials)

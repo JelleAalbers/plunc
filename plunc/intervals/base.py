@@ -1,6 +1,6 @@
 import numpy as np
-# Tried bisect, but results after rtol stop seem to depend heavily on initial bounds: bug??
-from scipy.optimize import brentq
+from plunc.common import round_to_digits
+from plunc.exceptions import SearchFailedException
 
 class IntervalChoice(object):
     """Base interval choice method class
@@ -8,7 +8,7 @@ class IntervalChoice(object):
     method = 'rank'    # 'rank' or 'threshold'
     threshold = float('inf')
     desired_precision = 0.01
-    use_interval_cache = False      # May fry your RAM, use wisely
+    use_interval_cache = True
     max_hypothesis = 1e6
 
     def __init__(self, statistic, confidence_level=0.9, background=0):
@@ -19,17 +19,18 @@ class IntervalChoice(object):
         # Dictionary holding "horizontal" intervals: interval on statistic for each precision and hypothesis.
         self.cached_intervals = {}
 
-    def get_interval_on_statistic(self, hypothesis, desired_precision):
+    def get_interval_on_statistic(self, hypothesis, precision_digits):
         """Returns the self.cl confidence level interval on self.statistic for the event rate hypothesis
         The event rate here includes signal as well as identically distributed background.
         Intervals are inclusive = closed.
         """
-        if self.use_interval_cache and (hypothesis, desired_precision) in self.cached_intervals:
-            return self.cached_intervals[(hypothesis, desired_precision)]
+        if self.use_interval_cache and (hypothesis, precision_digits) in self.cached_intervals:
+            return self.cached_intervals[(hypothesis, precision_digits)]
 
         # Remember hypothesis here includes background!
+        # TODO: u
         stat_values, likelihoods = self.statistic.get_values_and_likelihoods(hypothesis,
-                                                                             desired_precision=desired_precision)
+                                                                             precision_digits=precision_digits)
         likelihoods = likelihoods / np.sum(likelihoods)
 
         # Score each statistic value (method-dependent)
@@ -73,42 +74,56 @@ class IntervalChoice(object):
 
         # Cache and return upper and lower limit on the statistic
         if self.use_interval_cache:
-            self.cached_intervals[(hypothesis, desired_precision)] = low_lim, high_lim
+            self.cached_intervals[(hypothesis, precision_digits)] = low_lim, high_lim
         return low_lim, high_lim
 
-    def is_value_included(self, value, hypothesis, desired_precision):
-        low_lim, high_lim = self.get_interval_on_statistic(hypothesis, desired_precision)
+    def is_value_included(self, value, hypothesis, precision_digits):
+        low_lim, high_lim = self.get_interval_on_statistic(hypothesis, precision_digits=precision_digits)
         return low_lim <= value <= high_lim
 
-    def get_confidence_interval(self, value, desired_precision=None, max_mu=None, guess=None):
+    def get_confidence_interval(self, value, precision_digits, search_region, debug=False):
         """Perform Neynman construction to get confidence interval on event rate,
         if the statistic is observed to have value
         """
-        if max_mu is None:
-            max_mu = self.max_hypothesis
-        if desired_precision is None:
-            desired_precision = self.desired_precision
+        is_value_in = lambda mu: self.is_value_included(value, mu, precision_digits)
 
         # We first need one value in the interval to bound the limit searches
-        # TODO: Search this in some way... How?
-        if not self.is_value_included(value, guess, desired_precision):
-            raise ValueError("Guess must be in the interval; you gave %s, which is not." % guess)
+        try:
+            true_point, low_search_bound, high_search_bound = search_true_instance(is_value_in, *search_region,
+                                                                                   precision_digits=precision_digits,
+                                                                                   debug=debug)
+        except SearchFailedException as e:
+            if debug:
+                print("Exploratory search could not find a single value in the interval! "
+                      "This is probably a problem with search region, or simply a very extreme case."
+                      "Original exception: %s" % str(e))
+            if is_value_in(0):
+                if debug:
+                    print("Oh, ok, only zero is in the interval... Returning (0, 0)")
+                return 0, 0
+            return 0, float('inf')
 
-        if self.is_value_included(value, 0, desired_precision):
+        if debug:
+            print(">>> Exploratory search completed: %s is in interval, "
+                  "search for boundaries in [%s, %s]" % (true_point, low_search_bound, high_search_bound))
+
+        if is_value_in(low_search_bound):
             # If mu=0 can't be excluded, we're apparently only setting an upper limit (mu <= ..)
             low_limit = 0
         else:
-            low_limit = brentq(lambda mu: -1 + mu - max_mu if self.is_value_included(value, mu,
-                                                                                     desired_precision) else 1 + mu,
-                               0, guess, rtol=desired_precision)
+            low_limit = bisect_search(is_value_in, low_search_bound, true_point, precision_digits=precision_digits,
+                                      debug=debug)
+        if debug:
+            print(">>> Low limit found at %s" % low_limit)
 
-        if self.is_value_included(value, max_mu, desired_precision):
+        if is_value_in(high_search_bound):
             # If max_mu can't be excluded, we're apparently only setting a lower limit (mu >= ..)
             high_limit = float('inf')
         else:
-            high_limit = brentq(lambda mu: 1 + mu if self.is_value_included(value, mu,
-                                                                            desired_precision) else -1 + mu - max_mu,
-                                guess, max_mu, rtol=desired_precision)
+            high_limit = bisect_search(is_value_in, true_point, high_search_bound, precision_digits=precision_digits,
+                                       debug=debug)
+        if debug:
+            print(">>> High limit found at %s" % high_limit)
 
         return low_limit, high_limit
 
@@ -116,45 +131,102 @@ class IntervalChoice(object):
         # Return "rank" of each hypothesis. Hypotheses with highest ranks will be included first.
         raise NotImplementedError()
 
-    def __call__(self, observation, desired_precision=0.01, guess=None):
+    def __call__(self, observation, precision_digits=2, search_region=None, debug=False):
         """Perform Neynman construction to get confidence interval on event rate for observation.
         """
-        if guess is None:
-            guess = len(observation)
-        if desired_precision is None:
-            desired_precision = self.desired_precision
+        if search_region is None:
+            search_region = [0, round_to_digits(10 + 3 * len(observation), precision_digits)]
+        if precision_digits is None:
+            precision_digits = self.precision_digits
         if self.statistic.mu_dependent:
             value = self.statistic(observation, self.statistic.mus)
         else:
             value = self.statistic(observation, None)
-        return self.get_confidence_interval(value, desired_precision=desired_precision, guess=guess)
+        return self.get_confidence_interval(value, precision_digits=precision_digits, search_region=search_region,
+                                            debug=debug)
 
 
-# Mu is not necessarily integer. But if it was...
-# def bisect_search(f, a, b, rtol, maxiter=1e6):
-#     """Zoom in to integer x where f changes from True to False between integers a and b.
-#     If (a - b) < rtol or b = a + 1, stops and returns last integer for which f is True.
-#     """
-#     # Which of the bounds gives True? Can't be both!
-#     assert f(a) != f(b)
-#     if f(a):
-#         last_true = a
-#         assert not f(b)
-#     else:
-#         assert f(b)
-#         last_true = b
-#
-#     # Do the bisection search
-#     for _ in range(maxiter):
-#         if b == a + 1:
-#             return last_true
-#         x = (a + b) // 2
-#         if (a - b)/x < rtol:
-#             return last_true
-#         c = (a + b)/2
-#
-#     else:
-#         raise RuntimeError("Infinite loop encountered in bisection search!")
+def search_true_instance(f, a, b, precision_digits=3, debug=False, maxiter=10):
+    """Find x in [a, b] where f is True, limiting search to values with precision_digits significant figures.
+    Returns x, low_bound, high_bound where low_bound and high_bound are either the search bounds a or b, or closer
+    values to x where f was still found to be False.
+    # TODO: If asked for precision_digits=5, first search with precision_digits=1, then 2, etc.
+
+    print(search_true_instance(lambda x: 11 < x < 13, 0, 40))
+    print(search_true_instance(lambda x: x < 13, 0, 1000))
+    """
+    values_searched = [a, b]
+    if debug:
+        print("Starting exploratory search in [%s, %s]" % (a, b))
+
+    for iter_i in range(maxiter):
+        # First test halfway, point then 1/4 and 3/4, then 1/8, 3/8, 5/8, 7/8, etc.
+        fractions = 2**(iter_i + 1)
+        search_points = [round_to_digits(a + (b - a)*fr, precision_digits)
+                         for fr in np.arange(1, fractions, 2)/fractions]
+        if debug:
+            print("Searching %s - %s (%d points)" % (search_points[0], search_points[-1], len(search_points)))
+
+        for x_i, x in enumerate(search_points):
+            if f(x):
+                values_searched = np.array(values_searched)
+                return x, np.max(values_searched[values_searched < x]), np.min(values_searched[values_searched > x])
+            else:
+                values_searched.append(x)
+
+        if len(search_points) > 1 and np.any(np.diff(search_points) == 0):
+            raise SearchFailedException("No true value found in search region [%s, %s], "
+                                        "but search depth now lower than precision digits (%s). "
+                                        "Iteration %d." % (a, b, precision_digits, iter_i))
+
+    raise ValueError("Exploratory search failed to converge or terminate - bug? excessive precision?")
+
+
+def bisect_search(f, a, b, precision_digits=2, maxiter=1e2, debug=False):
+    """Find x in [a, b] where f changes from True to False by bisection,
+    limiting search to values with precision_digits significant figures.
+    This is useful if f can cache its results: otherwise just use e.g. scipy.optimize.brentq with rtol.
+    Avoid scipy.optimize.bisect with rtol, results seem seem to depend heavily on initial bounds: bug??
+    # TODO: If asked for precision_digits=5, first search with precision_digits=1, then 2, etc.
+    """
+    # Which of the bounds gives True? Can't be both!
+    if f(a) == f(b):
+        raise ValueError("f must not be true or false on both bounds")
+    true_on_a = f(a)
+
+    if debug:
+        print("Starting search between %s (%s) and %s (%s)"
+              " with %d precision digits" % (a, f(a), b, f(b), precision_digits))
+
+    # Do a bisection search, sticking to precision_digits
+    for iter_i in range(int(maxiter)):
+
+        # Find the new bisection point
+        x = (a + b) / 2
+        x = round_to_digits(x, precision_digits)
+
+        # If we are down to a single point, return that
+        if x == a or x == b:
+            return x
+        true_on_x = f(x)
+
+        # Update the appropriate bound
+        if true_on_a:
+            if true_on_x:
+                a = x
+            else:
+                b = x
+        else:
+            if true_on_x:
+                b = x
+            else:
+                a = x
+
+        if debug:
+            print("Iteration %d, searching between [%s and %s], last x was %s (%s)" % (iter_i, a, b, x, true_on_x))
+
+    else:
+        raise RuntimeError("Infinite loop encountered in bisection search!")
 
 # Custom limit setter = bad idea
 # class LimitTracker(object):

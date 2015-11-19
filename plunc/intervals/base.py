@@ -90,7 +90,7 @@ class IntervalChoice(object):
             true_point, low_search_bound, high_search_bound = search_true_instance(is_value_in,
                                                                                    *search_region,
                                                                                    precision_digits=precision_digits,
-                                                                                   debug=debug,)
+                                                                                   debug=debug)
         except SearchFailedException as e:
             if debug:
                 print("Exploratory search could not find a single value in the interval! "

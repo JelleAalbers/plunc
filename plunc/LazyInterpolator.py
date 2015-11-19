@@ -1,7 +1,7 @@
 import numpy as np
 
-class InsufficientPrecisionError(Exception):
-    pass
+from plunc.exceptions import InsufficientPrecisionError
+
 
 class LazyInterpolator(object):
     """Use interpolation (and optionally extrapolation) if possible, call function if precision requires it.

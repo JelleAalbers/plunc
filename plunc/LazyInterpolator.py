@@ -32,7 +32,11 @@ class LazyInterpolator(object):
             else:
                 self(x)
 
-    def __call__(self, x, force_call=False):
+    def __call__(self, x, force_call=False, **extra_kwargs):
+        """
+        force_call:      Force f to be called no matter what.
+        Other kwargs will be passed to f, if it has to be called
+        """
         self.log.debug("Asked for x = %s" % x)
         if self.loglog_space:
             x = np.log10(x)
@@ -41,7 +45,7 @@ class LazyInterpolator(object):
             self.log.debug("Below operating range")
             if self.if_lower == 'exact' or force_call:
                 self.log.debug("Calling f without storing the value")
-                y = self.f(x)
+                y = self.f(x, **extra_kwargs)
             elif self.if_lower == 'extrapolate':
                 y = self.extrapolate(x)
             else:
@@ -52,7 +56,7 @@ class LazyInterpolator(object):
             self.log.debug("Above operating range")
             if self.if_higher == 'exact' or force_call:
                 self.log.debug("Calling f without storing the value")
-                y = self.f(x)
+                y = self.f(x, **extra_kwargs)
             elif self.if_higher == 'extrapolate':
                 y = self.extrapolate(x)
             else:
@@ -62,19 +66,19 @@ class LazyInterpolator(object):
         else:
             if force_call:
                 self.log.debug("Calling f by force (in range, so can store value)")
-                y = self.call_and_add(x)
+                y = self.call_and_add(x, **extra_kwargs)
             elif x in self.points:
                 self.log.debug("Exact value known")
                 y = self.values[np.nonzero(self.points == x)[0][0]]
             else:
-                y = self.interpolate_or_call(x)
+                y = self.interpolate_or_call(x, **extra_kwargs)
 
         self.log.debug("Returning y = %s" % y)
         if self.loglog_space:
             y = 10**y
         return y
 
-    def interpolate_or_call(self, x):
+    def interpolate_or_call(self, x, **extra_kwargs):
         self.log.debug("In range, trying to call or interpolate")
         max_i = len(self.points) - 1
         if max_i < 2:
@@ -107,7 +111,7 @@ class LazyInterpolator(object):
 
         if abs(diff / y) > self.precision:
             self.log.debug("Calling because of insufficient precision in interpolation")
-            return self.call_and_add(x)
+            return self.call_and_add(x, **extra_kwargs)
         self.log.debug("Interpolation is ok, returning result")
         return y
 
@@ -139,12 +143,12 @@ class LazyInterpolator(object):
                                              "but %s required" % (abs(diff / y), self.precision))
         return y
 
-    def call_and_add(self, x):
+    def call_and_add(self, x, **extra_kwargs):
         """Returns self.f(x), storing its value for the benefit of future interpolation"""
         if self.loglog_space:
-            y = np.log10(self.f(10**x))
+            y = np.log10(self.f(10**x, **extra_kwargs))
         else:
-            y = self.f(x)
+            y = self.f(x, **extra_kwargs)
         # Add the point, then re-sort the points & values arrays
         # ... very inefficient use of arrays ...
         if not self.operating_range[0] <= x <= self.operating_range[1]:

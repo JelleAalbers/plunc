@@ -1,6 +1,9 @@
 import numpy as np
+import logging
 from plunc.common import round_to_digits
-from plunc.exceptions import SearchFailedException
+from plunc.exceptions import SearchFailedException, InsufficientPrecisionError, OutsideDomainError
+
+from plunc.WaryInterpolator import WaryInterpolator
 
 class IntervalChoice(object):
     """Base interval choice method class
@@ -9,12 +12,34 @@ class IntervalChoice(object):
     threshold = float('inf')
     precision_digits = 2
     use_interval_cache = True
+    wrap_interpolator = True
+    background = 0
+    confidence_level = 0.9
     max_hypothesis = 1e6
+    interpolator_log_domain = (-1, 3)
+    fixed_upper_limit = None
+    fixed_lower_limit = None
+    # Use only for testing:
+    forbid_exact_computation = False
 
-    def __init__(self, statistic, confidence_level=0.9, background=0):
-        self.cl = confidence_level
+    def __init__(self, statistic, **kwargs):
         self.statistic = statistic
-        self.background = background
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+        self.cl = self.confidence_level
+
+        self.log = logging.getLogger(self.__class__.__name__)
+
+        if self.wrap_interpolator:
+            self.log.debug("Initializing interpolators")
+            if self.fixed_lower_limit is None:
+                self.low_limit_interpolator = WaryInterpolator(precision=10**(-self.precision_digits),
+                                                               domain=self.interpolator_log_domain)
+            if self.fixed_upper_limit is None:
+                self.high_limit_interpolator = WaryInterpolator(precision=10**(-self.precision_digits),
+                                                                domain=self.interpolator_log_domain)
+            # "Joints" of the interpolator must have better precision than required of the interpolator results
+            self.precision_digits += 1
 
         # Dictionary holding "horizontal" intervals: interval on statistic for each precision and hypothesis.
         self.cached_intervals = {}
@@ -75,54 +100,87 @@ class IntervalChoice(object):
             self.cached_intervals[(hypothesis, precision_digits)] = low_lim, high_lim
         return low_lim, high_lim
 
-    def is_value_included(self, value, hypothesis, precision_digits):
-        low_lim, high_lim = self.get_interval_on_statistic(hypothesis, precision_digits=precision_digits)
-        return low_lim <= value <= high_lim
-
     def get_confidence_interval(self, value, precision_digits, search_region, debug=False):
         """Performs the Neynman construction to get confidence interval on event rate (mu),
         if the statistic is observed to have value
         """
-        is_value_in = lambda mu: self.is_value_included(value, mu + self.background, precision_digits)
+        log_value = np.log10(value)
+        if self.wrap_interpolator:
+            # Try to interpolate the limit from limits computed earlier
+            self.log.debug("Trying to get values from interpolators")
+            try:
+                if self.fixed_lower_limit is None:
+                    low_limit = 10**(self.low_limit_interpolator(log_value))
+                else:
+                    low_limit = self.fixed_lower_limit
+                if self.fixed_upper_limit is None:
+                    high_limit = 10**(self.high_limit_interpolator(log_value))
+                else:
+                    high_limit = self.fixed_upper_limit
+                return low_limit, high_limit
+            except InsufficientPrecisionError:
+                self.log.debug("Insuffienct precision achieved by interpolators")
+                if log_value > self.interpolator_log_domain[1]:
+                    self.log.debug("Too high value to dare to start Neyman construction... raising exception")
+                    # It is not safe to do the Neyman construction: too high statistics
+                    raise
+                self.log.debug("Log value %s is below interpolator log domain max %s "
+                               "=> starting Neyman construction" % (log_value, self.interpolator_log_domain[1]))
+            except OutsideDomainError:
+                # The value is below the interpolator  domain (e.g. 0 while the domain ends at 10**0 = 1)
+                pass
+
+        if self.forbid_exact_computation:
+            raise RuntimeError("Exact computation triggered")
+
+        def is_value_in(mu):
+            low_lim, high_lim = self.get_interval_on_statistic(mu + self.background,
+                                                               precision_digits=precision_digits)
+            return low_lim <= value <= high_lim
 
         # We first need one value in the interval to bound the limit searches
         try:
             true_point, low_search_bound, high_search_bound = search_true_instance(is_value_in,
                                                                                    *search_region,
-                                                                                   precision_digits=precision_digits,
-                                                                                   debug=debug)
+                                                                                   precision_digits=precision_digits)
         except SearchFailedException as e:
-            if debug:
-                print("Exploratory search could not find a single value in the interval! "
-                      "This is probably a problem with search region, or simply a very extreme case."
-                      "Original exception: %s" % str(e))
+            self.log.debug("Exploratory search could not find a single value in the interval! "
+                           "This is probably a problem with search region, or simply a very extreme case."
+                           "Original exception: %s" % str(e))
             if is_value_in(0):
-                if debug:
-                    print("Oh, ok, only zero is in the interval... Returning (0, 0)")
+                self.log.debug("Oh, ok, only zero is in the interval... Returning (0, 0)")
                 return 0, 0
             return 0, float('inf')
 
-        if debug:
-            print(">>> Exploratory search completed: %s is in interval, "
-                  "search for boundaries in [%s, %s]" % (true_point, low_search_bound, high_search_bound))
+        self.log.debug(">>> Exploratory search completed: %s is in interval, "
+                       "search for boundaries in [%s, %s]" % (true_point, low_search_bound, high_search_bound))
 
-        if is_value_in(low_search_bound):
+        if self.fixed_lower_limit is not None:
+            low_limit = self.fixed_lower_limit
+        elif is_value_in(low_search_bound):
             # If mu=0 can't be excluded, we're apparently only setting an upper limit (mu <= ..)
             low_limit = 0
         else:
-            low_limit = bisect_search(is_value_in, low_search_bound, true_point, precision_digits=precision_digits,
-                                      debug=debug)
-        if debug:
-            print(">>> Low limit found at %s" % low_limit)
+            low_limit = bisect_search(is_value_in, low_search_bound, true_point, precision_digits=precision_digits)
+        self.log.debug(">>> Low limit found at %s" % low_limit)
 
-        if is_value_in(high_search_bound):
+        if self.fixed_upper_limit is not None:
+            low_limit = self.fixed_upper_limit
+        elif is_value_in(high_search_bound):
             # If max_mu can't be excluded, we're apparently only setting a lower limit (mu >= ..)
             high_limit = float('inf')
         else:
-            high_limit = bisect_search(is_value_in, true_point, high_search_bound, precision_digits=precision_digits,
-                                       debug=debug)
-        if debug:
-            print(">>> High limit found at %s" % high_limit)
+            high_limit = bisect_search(is_value_in, true_point, high_search_bound, precision_digits=precision_digits)
+        self.log.debug(">>> High limit found at %s" % high_limit)
+
+        if self.wrap_interpolator:
+            # Add the values to the interpolator, if they are within the domain
+            # TODO: Think about dealing with inf
+            if self.interpolator_log_domain[0] <= log_value <= self.interpolator_log_domain[1]:
+                if self.fixed_lower_limit is None:
+                    self.low_limit_interpolator.add_point(log_value, np.log10(low_limit))
+                if self.fixed_upper_limit is None:
+                    self.high_limit_interpolator.add_point(log_value, np.log10(high_limit))
 
         return low_limit, high_limit
 
@@ -130,7 +188,7 @@ class IntervalChoice(object):
         # Return "rank" of each hypothesis. Hypotheses with highest ranks will be included first.
         raise NotImplementedError()
 
-    def __call__(self, observation, precision_digits=None, search_region=None, debug=False):
+    def __call__(self, observation, precision_digits=None, search_region=None):
         """Perform Neynman construction to get confidence interval on event rate for observation.
         """
         if precision_digits is None:
@@ -141,11 +199,11 @@ class IntervalChoice(object):
             value = self.statistic(observation, self.statistic.mus)
         else:
             value = self.statistic(observation, None)
-        return self.get_confidence_interval(value, precision_digits=precision_digits, search_region=search_region,
-                                            debug=debug)
+        self.log.debug("Statistic evaluates to %s" % value)
+        return self.get_confidence_interval(value, precision_digits=precision_digits, search_region=search_region)
 
 
-def search_true_instance(f, a, b, precision_digits=3, debug=False, maxiter=10):
+def search_true_instance(f, a, b, precision_digits=3, maxiter=10, log=None):
     """Find x in [a, b] where f is True, limiting search to values with precision_digits significant figures.
     Returns x, low_bound, high_bound where low_bound and high_bound are either the search bounds a or b, or closer
     values to x where f was still found to be False.
@@ -154,17 +212,17 @@ def search_true_instance(f, a, b, precision_digits=3, debug=False, maxiter=10):
     print(search_true_instance(lambda x: 11 < x < 13, 0, 40))
     print(search_true_instance(lambda x: x < 13, 0, 1000))
     """
+    log = logging.getLogger('search_true_instance')
+
     values_searched = [a, b]
-    if debug:
-        print("Starting exploratory search in [%s, %s]" % (a, b))
+    log.debug("Starting exploratory search in [%s, %s]" % (a, b))
 
     for iter_i in range(maxiter):
         # First test halfway, point then 1/4 and 3/4, then 1/8, 3/8, 5/8, 7/8, etc.
         fractions = 2**(iter_i + 1)
         search_points = [round_to_digits(a + (b - a)*fr, precision_digits)
                          for fr in np.arange(1, fractions, 2)/fractions]
-        if debug:
-            print("Searching %s - %s (%d points)" % (search_points[0], search_points[-1], len(search_points)))
+        log.debug("Searching %s - %s (%d points)" % (search_points[0], search_points[-1], len(search_points)))
 
         for x_i, x in enumerate(search_points):
             if f(x):
@@ -181,20 +239,21 @@ def search_true_instance(f, a, b, precision_digits=3, debug=False, maxiter=10):
     raise ValueError("Exploratory search failed to converge or terminate - bug? excessive precision?")
 
 
-def bisect_search(f, a, b, precision_digits=2, maxiter=1e2, debug=False):
+def bisect_search(f, a, b, precision_digits=2, maxiter=1e2):
     """Find x in [a, b] where f changes from True to False by bisection,
     limiting search to values with precision_digits significant figures.
     This is useful if f can cache its results: otherwise just use e.g. scipy.optimize.brentq with rtol.
     Avoid scipy.optimize.bisect with rtol, results seem seem to depend heavily on initial bounds: bug??
     # TODO: If asked for precision_digits=5, first search with precision_digits=1, then 2, etc.
     """
+    log = logging.getLogger('bisect_search')
+
     # Which of the bounds gives True? Can't be both!
     if f(a) == f(b):
         raise ValueError("f must not be true or false on both bounds")
     true_on_a = f(a)
 
-    if debug:
-        print("Starting search between %s (%s) and %s (%s)"
+    log.debug("Starting search between %s (%s) and %s (%s)"
               " with %d precision digits" % (a, f(a), b, f(b), precision_digits))
 
     # Do a bisection search, sticking to precision_digits
@@ -221,13 +280,12 @@ def bisect_search(f, a, b, precision_digits=2, maxiter=1e2, debug=False):
             else:
                 a = x
 
-        if debug:
-            print("Iteration %d, searching between [%s and %s], last x was %s (%s)" % (iter_i, a, b, x, true_on_x))
+        log.debug("Iteration %d, searching between [%s and %s], last x was %s (%s)" % (iter_i, a, b, x, true_on_x))
 
     else:
         raise RuntimeError("Infinite loop encountered in bisection search!")
 
-# Custom limit setter = bad idea
+# Earlier custom minimizer idea
 # class LimitTracker(object):
 #
 #     def __init__(self, interval_choice, value, max_hypothesis=1e6, desired_precision=0.01):

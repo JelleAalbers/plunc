@@ -6,12 +6,14 @@ import numpy as np
 
 
 class UpperLimit(IntervalChoice):
+    fixed_lower_limit = 0
 
     def score_stat_values(self, **kwargs):
         return -kwargs['statistic_values']
 
 
 class LowerLimit(IntervalChoice):
+    fixed_upper_limit = 0
 
     def score_stat_values(self, **kwargs):
         return kwargs['statistic_values']

@@ -25,7 +25,7 @@ class TestStatistic(object):
         # TODO: shortcut if self.__call__ is vectorized. Maybe implement in __call__ and have children override
         # something else instead (sounds nicer)
         values = np.zeros(self.n_trials)
-        for i, obs in enumerate(self.observation_generator(mu, n_trials=self.n_trials)):
+        for i, obs in enumerate(self.generate_observations(mu, n_trials=self.n_trials)):
             values[i] = self(obs)
 
         # Summarize values to pmf
@@ -96,13 +96,13 @@ class TestStatistic(object):
     def __call__(self, observation, hypothesis=None):
         raise NotImplementedError
 
-    def observation_generator(self, mu, n_trials=1):
+    def generate_observations(self, mu, n_trials=1):
         """Generate n_trials observations for the statistic under hypothesis mu"""
         n_per_trial = np.random.poisson(mu, n_trials)
         # Last array will always be empty, because we passed the very last index + 1 as split point
-        return np.split(self.event_generator(np.sum(n_per_trial)),
+        return np.split(self.generate_single_observation(np.sum(n_per_trial)),
                         np.cumsum(n_per_trial))[:-1]
 
-    def event_generator(self, n):
+    def generate_single_observation(self, n):
         """Generate a single observation of n events"""
         return np.zeros(n)

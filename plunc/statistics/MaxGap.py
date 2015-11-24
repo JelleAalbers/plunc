@@ -32,5 +32,5 @@ class MaxGap(TestStatistic):
             return np.array([1, 2]), np.array([1, 0])
         return TestStatistic.get_values_and_likelihoods(self, mu, precision_digits)
 
-    def event_generator(self, n_trials):
-        return np.random.uniform(0, 1, n_trials)
+    def generate_single_observation(self, n_trials):
+        return self.distribution.rvs(size=n_trials)

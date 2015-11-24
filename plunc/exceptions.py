@@ -4,3 +4,7 @@ class SearchFailedException(Exception):
 
 class InsufficientPrecisionError(Exception):
     pass
+
+
+class OutsideDomainError(Exception):
+    pass

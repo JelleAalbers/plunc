@@ -7,6 +7,8 @@ class FeldmanCousins(IntervalChoice):
     l_best_mu = None
 
     def get_interval_on_statistic(self, *args, **kwargs):
+        raise NotImplementedError
+        """
         if self.l_best_mu is None:
             # Called for the first time
             # Compute the maximum-likelihood estimate of mu in the physical region (mu >0)
@@ -25,6 +27,7 @@ class FeldmanCousins(IntervalChoice):
                 self.l_best_mu[i] = self.statistic.probability(s, max_mu)
 
         return IntervalChoice.get_interval_on_statistic(self, *args, **kwargs)
+        """
 
     def score_stat_values(self, **kwargs):
         #         plt.plot(kwargs['likelihoods'], label='Likelihoods')

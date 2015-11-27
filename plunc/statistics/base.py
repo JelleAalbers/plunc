@@ -7,7 +7,7 @@ class TestStatistic(object):
     """
     use_pmf_cache = True
     statistic_name = 's'
-    n_trials = int(1e4)
+    n_trials = int(1e4)     # Number of trials used in monte carlo training of p(s|mu) for a given mu
     mu_dependent = False    # Set to True if the statistic is hypothesis-dependent
 
     def __init__(self, **kwargs):
@@ -28,10 +28,10 @@ class TestStatistic(object):
         for i, obs in enumerate(self.generate_observations(mu, n_trials=self.n_trials)):
             values[i] = self(obs)
 
-        # Summarize values to pmf
+        # Summarize values to pdf/pmf
         # Allow statistic implementation to choose method for this, there is no universal solution
         # (e.g. very different for discrete or continuous statistics)
-        # TODO: handle under-overflow here?
+        # TODO: handle under- and overflow here?
         values, likelihoods = self.build_pdf(values, mu=mu)
         likelihoods /= likelihoods.sum()
 
@@ -74,24 +74,6 @@ class TestStatistic(object):
         values[0] = bin_edges[0]
         values[-1] = bin_edges[-1]
         return values, hist
-
-    def probability(self, value, mu):
-        """Returns probability of observing statistic = value under hypothesis mu
-        This uses the likelihood trained from Monte Carlo: override this function
-        if you have a better way of computing the likelihood
-        """
-        raise NotImplementedError
-
-    def probability_leq(self, value, mu):
-        """Returns probability of observing a statistic <= value under hypothesis mu
-        This uses the likelihood trained from Monte Carlo: override this function
-        if you have a better way of computing the likelihood
-        """
-        raise NotImplementedError
-
-    def likelihood_of_observation(self, observation, mu):
-        """Returns likelihood of observation under hypothesis mu"""
-        raise NotImplementedError
 
     def __call__(self, observation, hypothesis=None):
         raise NotImplementedError

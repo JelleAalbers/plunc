@@ -1,3 +1,3 @@
 from .base import *
-from .MaxGap import MaxGap
+from .RegionSeeking import MaxGap
 from .NumberOfEvents import NumberOfEvents
